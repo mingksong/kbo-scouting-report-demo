@@ -40,6 +40,80 @@ def get_pitcher_list(season: int):
     pitchers = df[df['season'] == season][['pitcher_pcode', 'player_name', 'team_name']].drop_duplicates()
     return pitchers.sort_values('player_name')
 
+def search_batters(season: int, query: str):
+    """타자 검색 (2글자 이상)"""
+    if len(query) < 2:
+        return pd.DataFrame()
+
+    df = load_batter_kpi()
+    players = load_players()
+
+    # 시즌 필터링
+    batters = df[df['season'] == season][['batter_pcode', 'player_name', 'team_name']].drop_duplicates()
+
+    # 이름 검색
+    results = batters[batters['player_name'].str.contains(query, na=False)]
+
+    # 선수 정보(투타) 조인
+    results = results.merge(
+        players[['pcode', 'phand', 'stand']],
+        left_on='batter_pcode',
+        right_on='pcode',
+        how='left'
+    )
+
+    # 투타 정보로 표시 이름 생성 (동명이인 구분)
+    def make_display_name(row):
+        name = row['player_name']
+        phand = row.get('phand', '')
+        stand = row.get('stand', '')
+
+        if pd.notna(phand) and pd.notna(stand):
+            hand_info = f"{phand}투{stand}타"
+            return f"{name} ({hand_info})"
+        return name
+
+    results['display_name'] = results.apply(make_display_name, axis=1)
+
+    return results.sort_values('player_name')
+
+def search_pitchers(season: int, query: str):
+    """투수 검색 (2글자 이상)"""
+    if len(query) < 2:
+        return pd.DataFrame()
+
+    df = load_pitcher_kpi()
+    players = load_players()
+
+    # 시즌 필터링
+    pitchers = df[df['season'] == season][['pitcher_pcode', 'player_name', 'team_name']].drop_duplicates()
+
+    # 이름 검색
+    results = pitchers[pitchers['player_name'].str.contains(query, na=False)]
+
+    # 선수 정보(투타) 조인
+    results = results.merge(
+        players[['pcode', 'phand', 'stand']],
+        left_on='pitcher_pcode',
+        right_on='pcode',
+        how='left'
+    )
+
+    # 투타 정보로 표시 이름 생성 (동명이인 구분)
+    def make_display_name(row):
+        name = row['player_name']
+        phand = row.get('phand', '')
+        stand = row.get('stand', '')
+
+        if pd.notna(phand) and pd.notna(stand):
+            hand_info = f"{phand}투{stand}타"
+            return f"{name} ({hand_info})"
+        return name
+
+    results['display_name'] = results.apply(make_display_name, axis=1)
+
+    return results.sort_values('player_name')
+
 def get_batter_data(batter_pcode: str, season: int):
     """특정 타자의 KPI 데이터"""
     df = load_batter_kpi()

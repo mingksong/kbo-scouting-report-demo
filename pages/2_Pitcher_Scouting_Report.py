@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.data_loader import (
-    get_pitcher_list, get_pitcher_data, get_team_color, load_pitcher_kpi
+    get_pitcher_list, get_pitcher_data, get_team_color, load_pitcher_kpi, search_pitchers
 )
 
 st.set_page_config(
@@ -80,27 +80,35 @@ with st.sidebar:
 
     season = st.selectbox("시즌", [2025, 2024, 2023, 2022, 2021], index=0)
 
-    # 투수 목록 가져오기
-    pitchers = get_pitcher_list(season)
+    # 선수 이름 검색
+    search_query = st.text_input("선수 이름 검색 (2글자 이상)", placeholder="예: 류현진")
 
-    if len(pitchers) == 0:
-        st.warning(f"{season} 시즌 데이터가 없습니다.")
-        st.stop()
+    pitcher_pcode = None
 
-    # 선수 선택
-    pitcher_options = pitchers.apply(
-        lambda x: f"{x['player_name']} ({x['team_name']})" if pd.notna(x['team_name']) else x['player_name'],
-        axis=1
-    ).tolist()
+    if len(search_query) >= 2:
+        # 검색 결과
+        search_results = search_pitchers(season, search_query)
 
-    selected_idx = st.selectbox(
-        "투수 선택",
-        range(len(pitcher_options)),
-        format_func=lambda x: pitcher_options[x]
-    )
+        if len(search_results) == 0:
+            st.warning(f"'{search_query}' 검색 결과가 없습니다.")
+        else:
+            # 검색 결과 선택
+            options = search_results['display_name'].tolist()
+            pcodes = search_results['pitcher_pcode'].tolist()
 
-    selected_pitcher = pitchers.iloc[selected_idx]
-    pitcher_pcode = selected_pitcher['pitcher_pcode']
+            selected_idx = st.selectbox(
+                f"검색 결과 ({len(options)}명)",
+                range(len(options)),
+                format_func=lambda x: options[x]
+            )
+
+            pitcher_pcode = pcodes[selected_idx]
+    else:
+        st.info("선수 이름을 2글자 이상 입력하세요.")
+
+if pitcher_pcode is None:
+    st.info("사이드바에서 선수를 검색하세요.")
+    st.stop()
 
 # 데이터 로드
 data = get_pitcher_data(pitcher_pcode, season)
@@ -269,64 +277,147 @@ with tab1:
 with tab2:
     st.subheader("카테고리별 상세 지표")
 
-    # 제구력
-    with st.expander("제구력 (Control)", expanded=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("초구 스트라이크율", f"{safe_float(data.get('first_pitch_strike_rate', 0))*100:.1f}%")
-            st.metric("볼넷 회피율", f"{safe_float(data.get('walk_avoidance_rate', 0))*100:.1f}%")
-        with col2:
-            st.metric("3볼 회복률", f"{safe_float(data.get('three_ball_recovery_rate', 0))*100:.1f}%")
-            st.metric("유리한 카운트 진입률", f"{safe_float(data.get('favorable_count_entry_rate', 0))*100:.1f}%")
-        with col3:
-            st.metric("주구종 제구율", f"{safe_float(data.get('main_pitch_control_rate', 0))*100:.1f}%")
+    # 가중치 정보 (투수)
+    PITCHER_METRIC_WEIGHTS = {
+        'control': {
+            'first_pitch_strike_rate': ('초구 스트라이크율', 0.25, '%'),
+            'walk_avoidance_rate': ('볼넷 회피율', 0.25, '%'),
+            'three_ball_recovery_rate': ('3볼 회복률', 0.20, '%'),
+            'favorable_count_entry_rate': ('유리한 카운트 진입률', 0.15, '%'),
+            'main_pitch_control_rate': ('주구종 제구율', 0.15, '%'),
+        },
+        'aggression': {
+            'two_strike_strikeout_rate': ('2스트라이크 삼진율', 0.35, '%'),
+            'early_strike_rate': ('초반 스트라이크율', 0.25, '%'),
+            'finishing_ability_rate': ('마무리 능력', 0.25, '%'),
+            'high_velocity_decision_rate': ('고속구 결정률', 0.15, '%'),
+        },
+        'efficiency': {
+            'avg_pitches_per_batter': ('타자당 평균 투구수', 0.40, '', True),  # 역방향
+            'count_efficiency_index': ('카운트 효율 지수', 0.30, ''),
+            'full_count_avoidance_rate': ('풀카운트 회피율', 0.30, '%'),
+        },
+        'stuff': {
+            'whiff_rate': ('헛스윙 유도율', 0.30, '%'),
+            'chase_rate': ('체이스율', 0.25, '%'),
+            'in_zone_whiff_rate': ('존내 헛스윙률', 0.20, '%'),
+            'unhittable_pitch_rate': ('언히터블 피치율', 0.15, '%'),
+            'avg_fastball_velocity': ('평균 패스트볼 구속', 0.10, 'km/h'),
+        },
+        'clutch': {
+            'risp_out_rate': ('득점권 아웃률', 0.25, '%'),
+            'bases_loaded_escape_rate': ('만루 탈출률', 0.20, '%'),
+            'two_out_inning_end_rate': ('2아웃 이닝 종료율', 0.20, '%'),
+            'first_batter_out_rate': ('첫 타자 아웃률', 0.20, '%'),
+            'close_game_prevention_rate': ('접전 실점 방지율', 0.10, '%'),
+            'momentum_protection_rate': ('모멘텀 보호율', 0.05, '%'),
+        }
+    }
 
-    # 공격성
-    with st.expander("공격성 (Aggression)", expanded=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("2스트라이크 삼진율", f"{safe_float(data.get('two_strike_strikeout_rate', 0))*100:.1f}%")
-            st.metric("초반 스트라이크율", f"{safe_float(data.get('early_strike_rate', 0))*100:.1f}%")
-        with col2:
-            st.metric("마무리 능력", f"{safe_float(data.get('finishing_ability_rate', 0))*100:.1f}%")
-            st.metric("고속구 결정률", f"{safe_float(data.get('high_velocity_decision_rate', 0))*100:.1f}%")
+    def get_weight_color(weight):
+        """가중치에 따른 색상"""
+        if weight >= 0.35:
+            return "#DC2626"  # 빨강 (매우 중요)
+        elif weight >= 0.25:
+            return "#EA580C"  # 주황 (중요)
+        elif weight >= 0.15:
+            return "#2563EB"  # 파랑 (보통)
+        elif weight >= 0.10:
+            return "#6B7280"  # 회색 (낮음)
+        else:
+            return "#9CA3AF"  # 연회색 (매우 낮음)
 
-    # 효율성
-    with st.expander("효율성 (Efficiency)", expanded=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("타자당 평균 투구수", f"{safe_float(data.get('avg_pitches_per_batter', 0)):.1f}")
-            st.metric("카운트 효율 지수", f"{safe_float(data.get('count_efficiency_index', 0)):.2f}")
-        with col2:
-            st.metric("풀카운트 회피율", f"{safe_float(data.get('full_count_avoidance_rate', 0))*100:.1f}%")
-            st.metric("빠른 해결율", f"{safe_float(data.get('quick_resolution_rate', 0))*100:.1f}%")
-        with col3:
-            st.metric("이닝당 투구수", f"{safe_float(data.get('pitches_per_inning', 0)):.1f}")
+    def render_pitcher_category_card(category_name, category_key, grade_key):
+        """투수 카테고리 카드 렌더링"""
+        grade = safe_float(data.get(grade_key, 50))
 
-    # 구위
-    with st.expander("구위 (Stuff)", expanded=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("헛스윙 유도율", f"{safe_float(data.get('whiff_rate', 0))*100:.1f}%")
-            st.metric("체이스율", f"{safe_float(data.get('chase_rate', 0))*100:.1f}%")
-        with col2:
-            st.metric("존내 헛스윙률", f"{safe_float(data.get('in_zone_whiff_rate', 0))*100:.1f}%")
-            st.metric("언히터블 피치율", f"{safe_float(data.get('unhittable_pitch_rate', 0))*100:.1f}%")
-        with col3:
-            avg_velocity = safe_float(data.get('avg_fastball_velocity', 0))
-            st.metric("평균 패스트볼 구속", f"{avg_velocity:.1f} km/h" if avg_velocity else "N/A")
+        # 카테고리 헤더
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+                    border-radius: 12px; padding: 16px; margin-bottom: 8px;
+                    border: 1px solid #fecaca;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h4 style="margin: 0; font-size: 1.1rem; font-weight: 600;">{category_name}</h4>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="background: {get_grade_color(grade)}; color: white;
+                                 padding: 4px 12px; border-radius: 20px; font-weight: bold;
+                                 font-size: 0.9rem;">{grade:.0f}</span>
+                    <span style="color: {get_grade_color(grade)}; font-size: 0.8rem;">
+                        {get_grade_label(grade)}
+                    </span>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # 클러치
-    with st.expander("클러치 (Clutch)", expanded=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("득점권 아웃률", f"{safe_float(data.get('risp_out_rate', 0))*100:.1f}%")
-            st.metric("만루 탈출률", f"{safe_float(data.get('bases_loaded_escape_rate', 0))*100:.1f}%")
-        with col2:
-            st.metric("2아웃 이닝 종료율", f"{safe_float(data.get('two_out_inning_end_rate', 0))*100:.1f}%")
-            st.metric("첫 타자 아웃률", f"{safe_float(data.get('first_batter_out_rate', 0))*100:.1f}%")
-        with col3:
-            st.metric("삼자범퇴 비율", f"{safe_float(data.get('three_up_three_down_rate', 0))*100:.1f}%")
+        # 세부 지표
+        metrics = PITCHER_METRIC_WEIGHTS.get(category_key, {})
+
+        for key, info in metrics.items():
+            name = info[0]
+            weight = info[1]
+            unit = info[2] if len(info) > 2 else ''
+
+            # 값 포맷팅
+            val = safe_float(data.get(key, 0))
+            if unit == '%':
+                formatted_val = f"{val*100:.1f}%"
+            elif unit == 'km/h':
+                formatted_val = f"{val:.1f} km/h" if val else "N/A"
+            elif unit == '':
+                if 'index' in key:
+                    formatted_val = f"{val:.2f}"
+                elif 'avg_pitches' in key:
+                    formatted_val = f"{val:.1f}"
+                else:
+                    formatted_val = f"{val:.3f}"
+            else:
+                formatted_val = f"{val:.2f}"
+
+            # 등급 (있으면)
+            grade_col = f"{key}_grade"
+            metric_grade = safe_float(data.get(grade_col, 0))
+
+            col1, col2, col3, col4 = st.columns([4, 2, 2, 2])
+
+            with col1:
+                st.markdown(f"""
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="font-size: 0.9rem;">{name}</span>
+                    <span style="color: {get_weight_color(weight)}; font-size: 0.75rem; font-weight: 600;">
+                        W-{int(weight*100)}%
+                    </span>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with col2:
+                st.markdown(f"<span style='font-family: monospace; font-weight: 500;'>{formatted_val}</span>",
+                           unsafe_allow_html=True)
+
+            with col3:
+                if metric_grade > 0:
+                    st.markdown(f"""
+                    <span style="background: {get_grade_color(metric_grade)}; color: white;
+                                 padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">
+                        {metric_grade:.0f}
+                    </span>
+                    """, unsafe_allow_html=True)
+
+            with col4:
+                percentile_col = f"{key}_percentile"
+                percentile = safe_float(data.get(percentile_col, 0))
+                if percentile > 0:
+                    st.markdown(f"<span style='font-size: 0.75rem; color: #6b7280;'>상위 {100-percentile:.0f}%</span>",
+                               unsafe_allow_html=True)
+
+        st.markdown("---")
+
+    # 각 카테고리 렌더링
+    render_pitcher_category_card("제구력 (Control)", "control", "control_grade")
+    render_pitcher_category_card("공격성 (Aggression)", "aggression", "aggression_grade")
+    render_pitcher_category_card("효율성 (Efficiency)", "efficiency", "efficiency_grade")
+    render_pitcher_category_card("구위 (Stuff)", "stuff", "stuff_grade")
+    render_pitcher_category_card("클러치 (Clutch)", "clutch", "clutch_grade")
 
 # ============================================================================
 # 리그 비교 탭

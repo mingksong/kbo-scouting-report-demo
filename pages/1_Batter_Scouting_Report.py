@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.data_loader import (
-    get_batter_list, get_batter_data, get_team_color, load_batter_kpi
+    get_batter_list, get_batter_data, get_team_color, load_batter_kpi, search_batters
 )
 
 st.set_page_config(
@@ -105,27 +105,35 @@ with st.sidebar:
 
     season = st.selectbox("시즌", [2025, 2024, 2023, 2022, 2021], index=0)
 
-    # 타자 목록 가져오기
-    batters = get_batter_list(season)
+    # 선수 이름 검색
+    search_query = st.text_input("선수 이름 검색 (2글자 이상)", placeholder="예: 김현수")
 
-    if len(batters) == 0:
-        st.warning(f"{season} 시즌 데이터가 없습니다.")
-        st.stop()
+    batter_pcode = None
 
-    # 선수 선택
-    batter_options = batters.apply(
-        lambda x: f"{x['player_name']} ({x['team_name']})" if pd.notna(x['team_name']) else x['player_name'],
-        axis=1
-    ).tolist()
+    if len(search_query) >= 2:
+        # 검색 결과
+        search_results = search_batters(season, search_query)
 
-    selected_idx = st.selectbox(
-        "타자 선택",
-        range(len(batter_options)),
-        format_func=lambda x: batter_options[x]
-    )
+        if len(search_results) == 0:
+            st.warning(f"'{search_query}' 검색 결과가 없습니다.")
+        else:
+            # 검색 결과 선택
+            options = search_results['display_name'].tolist()
+            pcodes = search_results['batter_pcode'].tolist()
 
-    selected_batter = batters.iloc[selected_idx]
-    batter_pcode = selected_batter['batter_pcode']
+            selected_idx = st.selectbox(
+                f"검색 결과 ({len(options)}명)",
+                range(len(options)),
+                format_func=lambda x: options[x]
+            )
+
+            batter_pcode = pcodes[selected_idx]
+    else:
+        st.info("선수 이름을 2글자 이상 입력하세요.")
+
+if batter_pcode is None:
+    st.info("사이드바에서 선수를 검색하세요.")
+    st.stop()
 
 # 데이터 로드
 data = get_batter_data(batter_pcode, season)
@@ -310,78 +318,155 @@ with tab1:
 with tab2:
     st.subheader("카테고리별 상세 지표")
 
-    # 컨택
-    with st.expander("컨택", expanded=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("타율", f"{safe_float(data.get('batting_average', 0)):.3f}")
-            st.metric("삼진율", f"{safe_float(data.get('strikeout_rate', 0))*100:.1f}%")
-        with col2:
-            st.metric("전체 컨택률", f"{safe_float(data.get('overall_contact_rate', 0))*100:.1f}%")
-            st.metric("2스트라이크 컨택률", f"{safe_float(data.get('two_strike_contact_rate', 0))*100:.1f}%")
-        with col3:
-            st.metric("존내 컨택률", f"{safe_float(data.get('in_zone_contact_rate', 0))*100:.1f}%")
-            st.metric("파울볼률", f"{safe_float(data.get('foul_ball_rate', 0))*100:.1f}%")
+    # 가중치 정보
+    METRIC_WEIGHTS = {
+        'contact': {
+            'batting_average': ('타율', 0.45, ''),
+            'strikeout_rate': ('삼진율', 0.25, '%', True),  # 역방향
+            'overall_contact_rate': ('전체 컨택률', 0.08, '%'),
+            'two_strike_contact_rate': ('2스트라이크 컨택률', 0.10, '%'),
+            'in_zone_contact_rate': ('존내 컨택률', 0.07, '%'),
+            'foul_ball_rate': ('파울볼률', 0.05, '%'),
+        },
+        'game_power': {
+            'home_run_rate': ('홈런율', 0.35, '%'),
+            'home_run_to_xbh_ratio': ('홈런/장타 비율', 0.25, '%'),
+            'isolated_power_hr': ('ISO (홈런)', 0.25, ''),
+            'home_run_per_hit_rate': ('홈런/안타 비율', 0.15, '%'),
+        },
+        'gap_power': {
+            'double_rate': ('2루타율', 0.30, '%'),
+            'triple_rate': ('3루타율', 0.05, '%'),
+            'isolated_power_gap': ('ISO (갭)', 0.30, ''),
+            'gap_hit_rate': ('갭 히트율', 0.20, '%'),
+            'double_to_single_ratio': ('2루타/1루타 비율', 0.15, ''),
+        },
+        'discipline': {
+            'walk_rate': ('볼넷율', 0.35, '%'),
+            'chase_rate': ('체이스율', 0.25, '%', True),  # 역방향
+            'zone_swing_rate': ('존 스윙률', 0.30, '%'),
+            'first_pitch_swing_rate': ('초구 스윙률', 0.08, '%'),
+            'three_zero_discipline': ('3-0 규율', 0.02, '%'),
+        },
+        'consistency': {
+            'monthly_variance': ('월별 분산', 0.35, '', True),  # 역방향
+            'left_right_ops_diff': ('좌우 OPS 차이', 0.30, '', True),  # 역방향
+            'fastball_contact_rate': ('직구 컨택률', 0.15, '%'),
+            'breaking_contact_rate': ('변화구 컨택률', 0.10, '%'),
+            'offspeed_contact_rate': ('체인지업 컨택률', 0.10, '%'),
+        },
+        'clutch': {
+            'high_leverage_performance': ('고레버리지 성적', 0.30, ''),
+            'risp_average': ('득점권 타율', 0.25, ''),
+            'two_out_rbi_rate': ('2아웃 타점율', 0.20, '%'),
+            'late_close_performance': ('후반 접전 성적', 0.20, ''),
+            'bases_loaded_average': ('만루 타율', 0.05, ''),
+        }
+    }
 
-    # 홈런 파워
-    with st.expander("홈런 파워", expanded=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("홈런율", f"{safe_float(data.get('home_run_rate', 0))*100:.1f}%")
-            st.metric("홈런/장타 비율", f"{safe_float(data.get('home_run_to_xbh_ratio', 0))*100:.1f}%")
-        with col2:
-            st.metric("ISO (홈런)", f"{safe_float(data.get('isolated_power_hr', 0)):.3f}")
-            st.metric("홈런/안타 비율", f"{safe_float(data.get('home_run_per_hit_rate', 0))*100:.1f}%")
-        with col3:
-            st.metric("홈런 수", f"{safe_int(data.get('home_runs', 0))}")
+    def get_weight_color(weight):
+        """가중치에 따른 색상"""
+        if weight >= 0.35:
+            return "#DC2626"  # 빨강 (매우 중요)
+        elif weight >= 0.25:
+            return "#EA580C"  # 주황 (중요)
+        elif weight >= 0.15:
+            return "#2563EB"  # 파랑 (보통)
+        elif weight >= 0.10:
+            return "#6B7280"  # 회색 (낮음)
+        else:
+            return "#9CA3AF"  # 연회색 (매우 낮음)
 
-    # 갭 파워
-    with st.expander("갭 파워", expanded=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("2루타율", f"{safe_float(data.get('double_rate', 0))*100:.1f}%")
-            st.metric("3루타율", f"{safe_float(data.get('triple_rate', 0))*100:.1f}%")
-        with col2:
-            st.metric("ISO (갭)", f"{safe_float(data.get('isolated_power_gap', 0)):.3f}")
-            st.metric("갭 히트율", f"{safe_float(data.get('gap_hit_rate', 0))*100:.1f}%")
-        with col3:
-            st.metric("2루타/1루타 비율", f"{safe_float(data.get('double_to_single_ratio', 0)):.2f}")
+    def render_category_card(category_name, category_key, grade_key, grade_weighted_key):
+        """카테고리 카드 렌더링"""
+        grade = safe_float(data.get(grade_weighted_key, data.get(grade_key, 50)))
 
-    # 선구안
-    with st.expander("선구안", expanded=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("볼넷율", f"{safe_float(data.get('walk_rate', 0))*100:.1f}%")
-            st.metric("체이스율", f"{safe_float(data.get('chase_rate', 0))*100:.1f}%")
-        with col2:
-            st.metric("존 스윙률", f"{safe_float(data.get('zone_swing_rate', 0))*100:.1f}%")
-            st.metric("초구 스윙률", f"{safe_float(data.get('first_pitch_swing_rate', 0))*100:.1f}%")
-        with col3:
-            st.metric("3-0 규율", f"{safe_float(data.get('three_zero_discipline', 0))*100:.1f}%")
+        # 카테고리 헤더
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+                    border-radius: 12px; padding: 16px; margin-bottom: 8px;
+                    border: 1px solid #e2e8f0;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h4 style="margin: 0; font-size: 1.1rem; font-weight: 600;">{category_name}</h4>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="background: {get_grade_color(grade)}; color: white;
+                                 padding: 4px 12px; border-radius: 20px; font-weight: bold;
+                                 font-size: 0.9rem;">{grade:.0f}</span>
+                    <span style="color: {get_grade_color(grade)}; font-size: 0.8rem;">
+                        {get_grade_label(grade)}
+                    </span>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # 일관성
-    with st.expander("일관성", expanded=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("월별 분산", f"{safe_float(data.get('monthly_variance', 0)):.3f}")
-            st.metric("좌우 OPS 차이", f"{safe_float(data.get('left_right_ops_diff', 0)):.3f}")
-        with col2:
-            st.metric("직구 컨택률", f"{safe_float(data.get('fastball_contact_rate', 0))*100:.1f}%")
-            st.metric("변화구 컨택률", f"{safe_float(data.get('breaking_contact_rate', 0))*100:.1f}%")
-        with col3:
-            st.metric("체인지업 컨택률", f"{safe_float(data.get('offspeed_contact_rate', 0))*100:.1f}%")
+        # 세부 지표
+        metrics = METRIC_WEIGHTS.get(category_key, {})
 
-    # 클러치
-    with st.expander("클러치", expanded=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("고레버리지 성적", f"{safe_float(data.get('high_leverage_performance', 0)):.3f}")
-            st.metric("득점권 타율", f"{safe_float(data.get('risp_average', 0)):.3f}")
-        with col2:
-            st.metric("2아웃 타점율", f"{safe_float(data.get('two_out_rbi_rate', 0))*100:.1f}%")
-            st.metric("후반 접전 성적", f"{safe_float(data.get('late_close_performance', 0)):.3f}")
-        with col3:
-            st.metric("만루 타율", f"{safe_float(data.get('bases_loaded_average', 0)):.3f}")
+        for key, info in metrics.items():
+            name = info[0]
+            weight = info[1]
+            unit = info[2] if len(info) > 2 else ''
+
+            # 값 포맷팅
+            val = safe_float(data.get(key, 0))
+            if unit == '%':
+                formatted_val = f"{val*100:.1f}%"
+            elif unit == '':
+                if 'average' in key or 'performance' in key or 'iso' in key.lower():
+                    formatted_val = f"{val:.3f}"
+                elif 'ratio' in key:
+                    formatted_val = f"{val:.2f}"
+                else:
+                    formatted_val = f"{val:.3f}"
+            else:
+                formatted_val = f"{val:.2f}"
+
+            # 등급 (있으면)
+            grade_col = f"{key}_grade"
+            metric_grade = safe_float(data.get(grade_col, 0))
+
+            col1, col2, col3, col4 = st.columns([4, 2, 2, 2])
+
+            with col1:
+                st.markdown(f"""
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="font-size: 0.9rem;">{name}</span>
+                    <span style="color: {get_weight_color(weight)}; font-size: 0.75rem; font-weight: 600;">
+                        W-{int(weight*100)}%
+                    </span>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with col2:
+                st.markdown(f"<span style='font-family: monospace; font-weight: 500;'>{formatted_val}</span>",
+                           unsafe_allow_html=True)
+
+            with col3:
+                if metric_grade > 0:
+                    st.markdown(f"""
+                    <span style="background: {get_grade_color(metric_grade)}; color: white;
+                                 padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">
+                        {metric_grade:.0f}
+                    </span>
+                    """, unsafe_allow_html=True)
+
+            with col4:
+                percentile_col = f"{key}_percentile"
+                percentile = safe_float(data.get(percentile_col, 0))
+                if percentile > 0:
+                    st.markdown(f"<span style='font-size: 0.75rem; color: #6b7280;'>상위 {100-percentile:.0f}%</span>",
+                               unsafe_allow_html=True)
+
+        st.markdown("---")
+
+    # 각 카테고리 렌더링
+    render_category_card("컨택", "contact", "contact_grade", "contact_grade_weighted")
+    render_category_card("홈런 파워", "game_power", "game_power_grade", "game_power_grade_weighted")
+    render_category_card("갭 파워", "gap_power", "gap_power_grade", "gap_power_grade_weighted")
+    render_category_card("선구안", "discipline", "discipline_grade", "discipline_grade_weighted")
+    render_category_card("일관성", "consistency", "consistency_grade", "consistency_grade_weighted")
+    render_category_card("클러치", "clutch", "clutch_grade", "clutch_grade_weighted")
 
 # ============================================================================
 # 분석 탭
