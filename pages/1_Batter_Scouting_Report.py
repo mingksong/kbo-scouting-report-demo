@@ -319,38 +319,39 @@ with tab2:
     st.subheader("카테고리별 상세 지표")
 
     # 가중치 정보
+    # unit: '' = 그대로, '%' = 이미 백분율(그대로 표시), '%*100' = 0-1 비율(×100 필요)
     METRIC_WEIGHTS = {
         'contact': {
             'batting_average': ('타율', 0.45, ''),
-            'strikeout_rate': ('삼진율', 0.25, '%', True),  # 역방향
+            'strikeout_rate': ('삼진율', 0.25, '%'),  # 이미 백분율
             'overall_contact_rate': ('전체 컨택률', 0.08, '%'),
             'two_strike_contact_rate': ('2스트라이크 컨택률', 0.10, '%'),
             'in_zone_contact_rate': ('존내 컨택률', 0.07, '%'),
             'foul_ball_rate': ('파울볼률', 0.05, '%'),
         },
         'game_power': {
-            'home_run_rate': ('홈런율', 0.35, '%'),
-            'home_run_to_xbh_ratio': ('홈런/장타 비율', 0.25, '%'),
+            'home_run_rate': ('홈런율', 0.35, '%'),  # 이미 백분율
+            'home_run_to_xbh_ratio': ('홈런/장타 비율', 0.25, '%*100'),  # 0-1 비율
             'isolated_power_hr': ('ISO (홈런)', 0.25, ''),
-            'home_run_per_hit_rate': ('홈런/안타 비율', 0.15, '%'),
+            'home_run_per_hit_rate': ('홈런/안타 비율', 0.15, '%'),  # 이미 백분율
         },
         'gap_power': {
-            'double_rate': ('2루타율', 0.30, '%'),
+            'double_rate': ('2루타율', 0.30, '%'),  # 이미 백분율
             'triple_rate': ('3루타율', 0.05, '%'),
             'isolated_power_gap': ('ISO (갭)', 0.30, ''),
             'gap_hit_rate': ('갭 히트율', 0.20, '%'),
             'double_to_single_ratio': ('2루타/1루타 비율', 0.15, ''),
         },
         'discipline': {
-            'walk_rate': ('볼넷율', 0.35, '%'),
-            'chase_rate': ('체이스율', 0.25, '%', True),  # 역방향
+            'walk_rate': ('볼넷율', 0.35, '%'),  # 이미 백분율
+            'chase_rate': ('체이스율', 0.25, '%'),
             'zone_swing_rate': ('존 스윙률', 0.30, '%'),
             'first_pitch_swing_rate': ('초구 스윙률', 0.08, '%'),
             'three_zero_discipline': ('3-0 규율', 0.02, '%'),
         },
         'consistency': {
-            'monthly_variance': ('월별 분산', 0.35, '', True),  # 역방향
-            'left_right_ops_diff': ('좌우 OPS 차이', 0.30, '', True),  # 역방향
+            'monthly_variance': ('월별 분산', 0.35, ''),
+            'left_right_ops_diff': ('좌우 OPS 차이', 0.30, ''),
             'fastball_contact_rate': ('직구 컨택률', 0.15, '%'),
             'breaking_contact_rate': ('변화구 컨택률', 0.10, '%'),
             'offspeed_contact_rate': ('체인지업 컨택률', 0.10, '%'),
@@ -411,12 +412,18 @@ with tab2:
             # 값 포맷팅
             val = safe_float(data.get(key, 0))
             if unit == '%':
+                # 이미 백분율 형태 (11.57 = 11.57%)
+                formatted_val = f"{val:.1f}%"
+            elif unit == '%*100':
+                # 0-1 비율을 백분율로 변환 (0.174 → 17.4%)
                 formatted_val = f"{val*100:.1f}%"
             elif unit == '':
                 if 'average' in key or 'performance' in key or 'iso' in key.lower():
                     formatted_val = f"{val:.3f}"
                 elif 'ratio' in key:
                     formatted_val = f"{val:.2f}"
+                elif 'variance' in key or 'diff' in key:
+                    formatted_val = f"{val:.3f}"
                 else:
                     formatted_val = f"{val:.3f}"
             else:
